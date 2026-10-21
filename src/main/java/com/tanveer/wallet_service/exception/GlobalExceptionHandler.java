@@ -62,6 +62,10 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
                  WALLET_FROZEN,
                  SYSTEM_WALLET_NOT_ALLOWED,
                  SAME_WALLET_TRANSFER,
+                 INVALID_AMOUNT,
+                 INVALID_IDEMPOTENCY_KEY,
+                 IDEMPOTENCY_KEY_REMOVED,
+                 MISSING_ACCOUNT,
                  IDEMPOTENCY_KEY_REUSED -> HttpStatus.UNPROCESSABLE_CONTENT;
         };
     }

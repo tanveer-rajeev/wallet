@@ -1,5 +1,7 @@
 package com.tanveer.wallet_service.domain;
 
+import com.tanveer.wallet_service.exception.BusinessException;
+
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 
@@ -18,7 +20,7 @@ public final class FeePolicy {
 
     public static long feeFor(long amount) {
         if (amount <= 0) {
-            throw new IllegalArgumentException("amount must be positive: " + amount);
+            throw BusinessException.invalidAmount(amount);
         }
         long rawFee = BigDecimal.valueOf(amount)
                 .multiply(FEE_RATE)

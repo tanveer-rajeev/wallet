@@ -1,4 +1,6 @@
 package com.tanveer.wallet_service.domain;
+import com.tanveer.wallet_service.dto.DepositRequest;
+import com.tanveer.wallet_service.exception.BusinessException;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -60,4 +62,10 @@ public class Wallet {
         return wallet;
     }
 
+    public void credit(long amount) {
+        if (amount <= 0) {
+            throw BusinessException.invalidAmount(amount);
+        }
+        this.balance = Math.addExact(this.balance, amount);
+    }
 }
