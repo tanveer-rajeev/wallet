@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.tanveer.wallet_service.domain.FeePolicy;
+import com.tanveer.wallet_service.exception.BusinessException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -44,6 +45,6 @@ class FeePolicyTest {
     @ValueSource(longs = {0, -1, -5000})
     void rejectsNonPositiveAmounts(long amount) {
         assertThatThrownBy(() -> FeePolicy.feeFor(amount))
-                .isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(BusinessException.class);
     }
 }

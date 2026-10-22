@@ -66,6 +66,16 @@ public class Wallet {
         if (amount <= 0) {
             throw BusinessException.invalidAmount(amount);
         }
-        this.balance = Math.addExact(this.balance, amount);
+        this.balance += amount;
+    }
+
+    public void debit(long amount) {
+        if (amount <= 0) {
+            throw BusinessException.invalidAmount(amount);
+        }
+        if (balance < amount) {
+            throw BusinessException.insufficientFunds(id);
+        }
+        this.balance -= amount;
     }
 }

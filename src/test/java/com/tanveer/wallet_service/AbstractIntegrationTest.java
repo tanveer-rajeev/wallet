@@ -3,16 +3,24 @@ package com.tanveer.wallet_service;
 import org.junit.jupiter.api.AfterEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.List;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest
+@AutoConfigureMockMvc
 @Import(TestcontainersConfig.class)
 public abstract class AbstractIntegrationTest {
+
+    @Autowired
+    MockMvc mockMvc;
+
     @Autowired
     protected JdbcTemplate jdbc;
 
@@ -35,5 +43,13 @@ public abstract class AbstractIntegrationTest {
                     FROM ledger_entries WHERE wallet_id = w.id)
                 """, String.class);
         assertThat(mismatched).isEmpty();
+    }
+
+    protected long balanceOf(UUID walletId) {
+        return jdbc.queryForObject("SELECT balance FROM wallets WHERE id = ?", Long.class, walletId);
+    }
+
+    protected static String newKey() {
+        return UUID.randomUUID().toString();
     }
 }
