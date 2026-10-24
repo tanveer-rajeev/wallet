@@ -1,65 +1,259 @@
 # Wallet Service
 
-A small REST service for IQD wallets: create wallets, deposit, transfer, and pay bills.
-Stack: Java 21, Spring Boot 4, Maven, PostgreSQL 18, Flyway, Testcontainers.
+A small REST service for **BDT wallets**. Customers can deposit money, send money to each other (with a fee), and pay bills through an unreliable external biller.
 
-## How to run
+The main goal is **correctness with money**. No dinar is created or lost, retries never move money twice, balances never go below zero under parallel requests, and every operation is traceable in an append-only ledger.
+
+**Stack:** Java 21 · Spring Boot 4 · Spring Data JPA (Hibernate) · PostgreSQL 16 · Flyway · Maven · Testcontainers
+
+---
+
+## Quick start
+
+You need Java 21, Maven and Docker.
+
+```bash
+docker compose up -d      # start PostgreSQL
+mvn spring-boot:run       # start the service on http://localhost:8080
+mvn test                  # run all tests (Docker must be running)
+```
+
+Tests start their own real PostgreSQL with Testcontainers. There is no in-memory database anywhere.
+
+### Configuration
+
+| Property | Default | Meaning |
+|---|---|---|
+| `spring.datasource.*` | `localhost:5432/wallet`, user and password `wallet` | Database (matches `docker-compose.yml`) |
+| `biller.base-url` | `http://localhost:9090` | Base URL of the external biller |
+| `bill-payments.reconcile-interval-ms` | `30000` | How often open bill payments are checked again |
+
+> No real biller is included. Without one, bill payments are saved and stay `PENDING`. The tests use a fake biller.
+
+---
+
+## API
+
+Every request that moves money needs an **`Idempotency-Key`** header (use a new UUID for each new operation, and reuse the same key when retrying).
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/api/v1/wallets` | Create a wallet (balance starts at 0) |
+| `GET` | `/api/v1/wallets/{id}` | Wallet details and balance |
+| `POST` | `/api/v1/wallets/{id}/deposits` | Top up a wallet (cash-in) |
+| `POST` | `/api/v1/transfers` | Send money from one wallet to another |
+| `POST` | `/api/v1/bill-payments` | Pay a bill from a wallet |
+
+### Try it
+
+```bash
+# 1. Create two wallets
+curl -X POST localhost:8080/api/v1/wallets -H "Content-Type: application/json" \
+  -d '{"ownerId":"ali"}'
+curl -X POST localhost:8080/api/v1/wallets -H "Content-Type: application/json" \
+  -d '{"ownerId":"sara"}'
+
+# 2. Deposit 200,000 BDT into Ali's wallet
+curl -X POST localhost:8080/api/v1/wallets/<ALI_ID>/deposits \
+  -H "Content-Type: application/json" -H "Idempotency-Key: $(uuidgen)" \
+  -d '{"amount":200000}'
+
+# 3. Ali sends 100,000 BDT to Sara (fee 500, so Ali pays 100,500)
+curl -X POST localhost:8080/api/v1/transfers \
+  -H "Content-Type: application/json" -H "Idempotency-Key: $(uuidgen)" \
+  -d '{"fromWalletId":"<ALI_ID>","toWalletId":"<SARA_ID>","amount":100000}'
+
+# 4. Check the balance
+curl localhost:8080/api/v1/wallets/<ALI_ID>
+```
+
+Transfer response:
+
+```json
+{
+  "transactionId": "…",
+  "fromWalletId": "…",
+  "toWalletId": "…",
+  "amount": 100000,
+  "fee": 500,
+  "createdAt": "2026-10-24T10:15:30.123456Z"
+}
+```
+
+A bill payment returns `{ "id", "walletId", "amount", "status", "createdAt" }`, where `status` is `SUCCEEDED`, `FAILED` or `PENDING`.
+
+### Errors
+
+Errors use the standard `ProblemDetail` format with a stable `code` field:
+
+```json
+{ "title": "INSUFFICIENT_FUNDS", "status": 422, "detail": "Wallet … has insufficient funds",
+  "instance": "/api/v1/transfers", "code": "INSUFFICIENT_FUNDS" }
+```
+
+| Status | Codes |
+|---|---|
+| 400 | `VALIDATION_FAILED` (with an `errors` map), `INVALID_IDEMPOTENCY_KEY`, malformed JSON, missing header, bad UUID |
+| 404 | `WALLET_NOT_FOUND` |
+| 422 | `INSUFFICIENT_FUNDS`, `WALLET_FROZEN`, `SYSTEM_WALLET_NOT_ALLOWED`, `SAME_WALLET_TRANSFER`, `IDEMPOTENCY_KEY_REUSED` |
+| 500 | `INTERNAL_ERROR` (no internal details are returned) |
+
+---
+
+## Business rules
+
+- Amounts are **whole dinars**, from 1 to **5,000,000**. Anything else is rejected (this applies to deposits, transfers and bill payments).
+- **Transfer fee:** 0.5% of the amount, rounded HALF_UP to whole dinars, **minimum 250**, **maximum 10,000**. The sender pays `amount + fee`. Deposits and bill payments have no fee.
+
+  | Amount | Fee |
+    |---|---|
+  | 10,000 | 250 (minimum) |
+  | 50,100 | 251 (250.5 rounds up) |
+  | 100,000 | 500 |
+  | 5,000,000 | 10,000 (maximum) |
+
+- A customer balance **never goes below zero**.
+- A **frozen** wallet cannot send money or pay bills. It can still receive money. There is no endpoint to freeze a wallet; set it in the database: `UPDATE wallets SET status = 'FROZEN' WHERE id = '…'`.
+- Customers **cannot use the system wallets** (fee, cash-in, biller clearing) to send, receive or deposit. They can read them with `GET`.
+- Sending money to your own wallet is rejected.
+
+---
+
+## How money is modeled
+
+### System wallets
+
+Three wallets are created by a Flyway migration, with fixed ids. They exist so every dinar always has a "from" and a "to".
+
+| Wallet | Role |
+|---|---|
+| `CASH_IN` | Source of every deposit. Its balance goes **negative** on purpose: it is the total cash we hold for customers. |
+| `FEE` | Receives the fee of every transfer. |
+| `BILLER_CLEARING` | Holds money for bill payments. After settling, it equals what the biller received. |
+
+### Ledger
+
+Every operation writes one row in `transactions` and one row per movement in `ledger_entries`. A `DEBIT` lowers a wallet's balance and a `CREDIT` raises it. For one operation, debits always equal credits.
+
+Example: Ali deposits 200,000, then sends 100,000 to Sara:
+
+| Operation | Account | Direction | Amount |
+|---|---|---|---|
+| Deposit | CASH_IN | DEBIT | 200,000 |
+| Deposit | Ali | CREDIT | 200,000 |
+| Transfer | Ali | DEBIT | 100,500 |
+| Transfer | Sara | CREDIT | 100,000 |
+| Transfer | FEE | CREDIT | 500 |
+
+`transactions` and `ledger_entries` are **append-only**: a database trigger rejects `UPDATE` and `DELETE`. A mistake is fixed with a new operation, never an edit. For example, a declined bill payment is undone by a new `BILL_REFUND` operation.
+
+### Proving the books add up
+
+```sql
+-- 1. All balances add up to zero
+SELECT SUM(balance) FROM wallets;
+
+-- 2. Total credits equal total debits
+SELECT SUM(CASE WHEN direction = 'CREDIT' THEN amount ELSE -amount END) FROM ledger_entries;
+
+-- 3. Wallets whose balance does not match their own ledger (should return no rows)
+SELECT w.id FROM wallets w
+WHERE w.balance <> (
+    SELECT COALESCE(SUM(CASE WHEN direction = 'CREDIT' THEN amount ELSE -amount END), 0)
+    FROM ledger_entries WHERE wallet_id = w.id);
+```
+
+The integration tests run these same three checks after every test.
+
+---
+
+## Design decisions
+
+### All or nothing
+Each operation runs in **one database transaction**: the ledger rows, the balance changes and the notification row commit together or not at all. A crash can never leave a debit without its credit, or a fee without its transfer.
+
+### Parallel requests
+The wallets an operation changes are locked with `SELECT ... FOR UPDATE`, **always in id order**.
+- Requests on the same wallet wait in line, and each one sees the latest balance. I chose locks over optimistic retries because many requests can hit one wallet at the same time, and I want them to queue instead of failing.
+- A fixed order means A→B and B→A at the same moment cannot deadlock.
+- A `CHECK` constraint on the table is the last line of defense for the "no negative balance" rule.
+
+### Idempotency (safe retries)
+- **The client makes the key.** The server never makes keys, because a client that lost the response would never learn the key.
+- **Scope:** a key is unique per operation type, `(type, idempotency_key)`. There is no login in this service, so keys are not scoped per customer. UUIDs make a clash very unlikely.
+- **How it works:** the first database step of every operation is `INSERT ... ON CONFLICT DO NOTHING` on `transactions`, in the same transaction as the money. The unique index picks one winner, so ten identical requests at the same moment cannot all pass. A retry gets the saved answer.
+- The same key with a different body returns `422 IDEMPOTENCY_KEY_REUSED`.
+- A **failed** request rolls back, key included. A retry is evaluated again (for example, after a top-up it can succeed).
+
+### Notifications (outbox)
+A "transfer completed" row is saved in `outbox_events` in the same transaction as the transfer. So a customer is never told about a transfer that failed, and never misses one that worked. A background sender would read the rows where `published_at IS NULL`, send them, and mark them sent. The sender is not built yet.
+
+### Bill payments and the unreliable biller
+The biller can time out without telling us whether it paid. So the service never guesses:
 
 ```
-docker compose up -d && mvn spring-boot:run     # run the service
-mvn test                                        # run all tests (Docker must be running)
+1. HOLD     wallet -amount, BILLER_CLEARING +amount, payment saved as PENDING   (transaction 1)
+2. ASK      call the biller with a fixed reference (the payment id)
+3. RECORD   approved -> SUCCEEDED
+            declined -> refund once, FAILED
+            timeout  -> do nothing, stays PENDING                               (transaction 2)
 ```
 
-Tests start their own real PostgreSQL with Testcontainers. No in-memory database is used.
+- A **timeout never causes a refund**, because the bill may have been paid.
+- A scheduled **reconciler** asks again for every `PENDING` payment, using the same reference. The biller never pays one reference twice, so asking again is safe. This also covers a restart in the middle of a payment.
+- Only one caller at a time can settle a payment (`FOR UPDATE SKIP LOCKED` on the payment row), so several service instances cannot get different answers for the same payment.
+- Refund only happens while the payment is `PENDING`, and its idempotency key is the payment id, so a wallet cannot be refunded twice.
+- The biller call happens between two transactions, so no wallet row stays locked while waiting for the network.
 
-## Decisions where the brief was silent
+| What happened at the biller | Service result |
+|---|---|
+| Approved | `SUCCEEDED`, wallet charged |
+| Declined | `FAILED`, wallet refunded |
+| Paid, but the reply timed out | `PENDING`, then `SUCCEEDED` on the next check, paid once |
+| Not paid, and the reply timed out | `PENDING`, then paid or declined on the next check |
+| Service crashes at any step | The `PENDING` row survives and the reconciler finishes it |
 
-- **Retries:** deposits, transfers and bill payments need an `Idempotency-Key` header. A retry with the same key returns the first answer and moves no money. The same key with a different body returns 422. Failed requests are not saved, so a retry is checked again.
-- **System accounts:** the fee and cash-in accounts are normal wallets with a `kind` column. Cash-in can go negative on purpose (it is the cash we hold for customers). Only customer wallets cannot. All balances always add up to 0.
-- **Rules I added:** deposit limits are the same as transfers (1 to 5,000,000). Sending to yourself is rejected. A frozen wallet can still receive money. Customers cannot use system wallets, but anyone can read them with GET.
-- **Request bodies:** transfer uses `fromWalletId`, `toWalletId`, `amount`. Bill payment uses `walletId`, `amount`. There is one biller, so no biller code.
-- **Wallets:** creating a wallet is not idempotent (a retry just makes another empty wallet). One owner can have many wallets.
-- **Status codes:** 400 for a bad request, 404 for an unknown wallet, 422 for a broken business rule (not enough money, frozen wallet, and so on).
-- **Bill payment result:** the POST returns 201 with a `status`: `SUCCEEDED`, `FAILED` or `PENDING`. `PENDING` means the biller has not answered yet and it will be settled automatically. There is no lookup endpoint, so a client can send the same POST again to see the current status.
-- **Biller API:** the brief only asks for a fake biller, so the real HTTP client (`HttpBillerClient`) is my own guess of the API. It exists so the app can start.
+The service does not call a "status" endpoint of the biller. A "not paid" answer can be old if a request is still on its way, so a refund based on it is risky. Asking again with the same reference gives a final answer. `HttpBillerClient` assumes this contract: `POST /payments` with `{reference, amount}` returns `200` (approved), `422` (declined), and anything else counts as unknown.
 
-## Key design choices
+---
 
-- **Ledger:** every operation writes rows in `transactions` and `ledger_entries`. Debits always equal credits. A database trigger blocks update and delete on both tables, so history cannot change. A fix is a new operation (for example `BILL_REFUND`), linked from `bill_payments`.
-- **Balance:** the wallet balance is kept in the wallet row, and a `CHECK` rule stops customer balances going below 0. Tests check that balances add up to 0 and match the ledger after every integration test.
-- **Concurrency (locking).** Each operation runs in one database transaction and locks the wallets it changes with `SELECT ... FOR UPDATE`.
-    - **Why lock rows instead of retrying:** many requests can hit the same wallet at once (the 50-transfer test). With row locks they simply wait in line and each one sees the latest balance, so the balance cannot go below 0. The other option (optimistic locking) would make most of the 50 requests fail and retry.
-    - **Why in id order:** if A sends to B while B sends to A, and each locks its own wallet first, each waits for the other forever (a deadlock). If every transfer locks the lower id first, one of them always gets both wallets and the other waits.
-    - **System wallets:** the fee, cash-in and clearing wallets are always updated after the customer wallets, so the order stays the same everywhere.
-    - **Trade-off:** all transfers update the one fee wallet row, so they wait for each other there (see Known gaps).
-    - **Retries:** the key is saved first with `INSERT ... ON CONFLICT DO NOTHING`, in the same transaction as the money. Parallel retries wait for the first one and then get its answer.
-- **Notification:** a "transfer completed" row is saved in an outbox table in the same transaction as the transfer. A customer is never told about a transfer that failed, and never misses one that worked. A sender job would read the unsent rows. I did not build the sender.
-- **Bill payments:** the money is first moved to a system wallet (`BILLER_CLEARING`) and the payment is saved as `PENDING`. Then the biller is called.
-    - Approved: `SUCCEEDED`. Declined: refund once, then `FAILED`.
-    - A timeout changes nothing. We never refund on a timeout, because the bill may be paid.
-    - A scheduled job asks again every 30 seconds with the same reference (the payment id). The biller never pays one reference twice, so asking again is safe. This also covers a restart.
-    - Only one caller at a time can settle a payment (`FOR UPDATE SKIP LOCKED`). This keeps several instances safe.
-    - I do not use `status()` in the service. A "not paid" answer could be old if a request is still on its way, so a refund based on it is risky. The test uses `status()` to check the truth.
-- **Tests (only the ones in the brief):** fee unit test, 50 parallel transfers (exactly 29 succeed, 2,750 left), 10 parallel retries sent over HTTP with database checks, and 200 bill payments with a fake biller (fixed seed 42, 60/15/15/10).he fake biller uses a fixed seed (42), so every run gives the same outcomes. The test checks totals and consistency, so it should hold for any seed
-- **Thread pool in tests:** I used a fixed thread pool, so all clients start at the same moment. Virtual threads would give the same result here, because the database lock decides the outcome. I would use them for thousands of clients.
+## Project structure
 
-## Known gaps
+```
+src/main/java/com/tanveer/wallet_service/
+├── api/         controllers, request/response records, global exception handler
+├── service/     business logic (transfer, deposit, bill payments, idempotency, reconciler)
+├── domain/      entities, enums, fee policy
+├── repository/  Spring Data repositories (including the locking queries)
+├── biller/      BillerClient interface and its HTTP implementation
+└── exception/   BusinessException and ErrorCode
+src/main/resources/db/migration/   Flyway: V1 schema, V2 system wallets
+```
 
-- Fee and cash-in are single rows, so all transfers (or deposits) wait for each other on one row.
-  If fee-balance updates became a bottleneck, one option would be to maintain an append-only ledger and update the aggregated fee balance asynchronously using a transactional outbox. This would reduce contention, but the aggregate balance could temporarily lag behind completed transfers.
-  If synchronous fee accounting were required at higher volumes, I could consider sharding the fee accounts to distribute writes. However, that would increase the complexity of reconciliation and balance management.
-- A bill payment is retried forever. There is no back-off and no deadline. After a deadline I would check `status()` on the biller and refund if it was not paid.
-- The biller call holds one database connection while it waits (up to about 7 seconds).
-- No dedicated tests for deposit retries, input validation, error responses, the HTTP biller client, or two instances settling the same payment.
-- No lock timeout on the database, and the outbox sender is missing.
+The service layer depends on the `BillerClient` interface only, so the HTTP code can change without touching payment logic, and tests can plug in a fake biller.
 
-## With one more day
+---
 
-- **Add the missing tests.** Deposit retries, input validation and error responses, the HTTP biller client, and two instances settling the same bill payment at the same time. These paths work through the required tests today, but they have no tests of their own.
-- **Update the shared accounts (fee, cash-in) asynchronously.** Today every transfer updates the one fee row, and every deposit updates the one cash-in row, so these requests wait for each other. I would keep writing the ledger rows inside the transaction, so the history stays exact, and update those two balances in small batches in the background. Trade-off: their balances can be a few seconds behind, and I would adjust the "balances add up to 0" check to allow for that.
-- **Build the outbox sender.** A background job that reads the unsent "transfer completed" rows, sends the notification, and marks each row as sent. It can send a message twice after a crash, so the receiver would use the event id to ignore duplicates.
-- **Add a payment deadline.** Today a pending bill payment is retried forever. After a time limit (for example 24 hours), I would stop retrying and ask the biller for the real status once. If the bill was paid, mark it succeeded. If not, refund the wallet and mark it failed. This needs a `status()` call on the real biller client.
+## Testing
 
-## Time spent
+All integration tests run against a real PostgreSQL started by Testcontainers (one shared container).
 
-Approximately 16 hours.
+- **Unit tests:** the fee rule (rounding, minimum and maximum edges), wallet debit and credit rules, bill payment state rules.
+- **Concurrency:** a wallet holds 300,000 BDT and 50 parallel transfers of 10,000 are sent. Exactly 29 succeed and 2,750 is left. Also, opposite transfers (A→B and B→A) at the same time do not deadlock.
+- **Retries:** the same transfer is sent 10 times in parallel over HTTP. The database is checked: one transaction, one set of ledger rows, one outbox row, and the right balances.
+- **Atomicity:** a failure after the money moved rolls everything back.
+- **Bill payments:** each biller outcome one by one, plus 200 payments against a fake biller (fixed random seed, 60% approved, 15% declined, 15% timeout after paying, 10% timeout before paying). Every payment ends `SUCCEEDED` or `FAILED`, the money taken from wallets equals the money the biller received, and nothing is paid or refunded twice.
+- **API and database rules:** validation, error responses, system wallets, frozen wallets, and the database triggers and constraints.
+
+After every integration test, the suite checks that all balances add up to zero and match the ledger.
+
+---
+
+## Limitations and roadmap
+
+- **Hot rows.** Every transfer updates the single fee wallet, and every deposit updates the single cash-in wallet, so these requests wait for each other. Next step: keep writing ledger rows in the transaction, but update these two balances in batches in the background.
+- **Bill payment retries have no end.** A `PENDING` payment is retried forever, with no back-off. Next step: a deadline (for example 24 hours), then ask the biller for its real status once, and either mark it paid or refund.
+- **The biller call holds a database connection** (up to about 7 seconds) while it waits.
+- **The outbox sender is missing.** Messages are saved but not delivered. It should deliver at least once, so receivers should ignore duplicate event ids.
+- **No authentication**, one currency (BDT), and no history or search endpoints.
+- **Not covered by tests yet:** the HTTP biller client, and two instances settling the same payment at the same time.
