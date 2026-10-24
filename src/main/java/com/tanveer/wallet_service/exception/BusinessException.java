@@ -1,5 +1,6 @@
 package com.tanveer.wallet_service.exception;
 
+import com.tanveer.wallet_service.domain.BillPaymentStatus;
 import com.tanveer.wallet_service.domain.ErrorCode;
 import com.tanveer.wallet_service.domain.WalletKind;
 import lombok.Getter;
@@ -60,5 +61,26 @@ public class BusinessException extends RuntimeException {
 
     public static BusinessException missingAccount(WalletKind kind) {
         return new BusinessException(ErrorCode.MISSING_ACCOUNT, kind.name() + " account is missing");
+    }
+
+    public static BusinessException billPaymentNotFound(UUID transactionId) {
+        return new BusinessException(
+                ErrorCode.BILL_PAYMENT_NOT_FOUND,
+                "No bill payment found for transaction " + transactionId
+        );
+    }
+
+    public static BusinessException billPaymentAlreadyRefunded(UUID paymentId) {
+        return new BusinessException(
+                ErrorCode.BILL_PAYMENT_ALREADY_REFUNDED,
+                "Bill payment " + paymentId + " was already refunded"
+        );
+    }
+
+    public static BusinessException billPaymentNotPending(UUID paymentId, BillPaymentStatus status) {
+        return new BusinessException(
+                ErrorCode.BILL_PAYMENT_NOT_PENDING,
+                "Bill payment " + paymentId + " is already " + status
+        );
     }
 }

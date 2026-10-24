@@ -66,6 +66,9 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
                  INVALID_IDEMPOTENCY_KEY,
                  IDEMPOTENCY_KEY_REMOVED,
                  MISSING_ACCOUNT,
+                 BILL_PAYMENT_NOT_FOUND,
+                 BILL_PAYMENT_ALREADY_REFUNDED,
+                 BILL_PAYMENT_NOT_PENDING,
                  IDEMPOTENCY_KEY_REUSED -> HttpStatus.UNPROCESSABLE_CONTENT;
         };
     }

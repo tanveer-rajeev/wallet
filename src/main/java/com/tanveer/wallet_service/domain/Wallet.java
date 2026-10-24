@@ -78,4 +78,16 @@ public class Wallet {
         }
         this.balance -= amount;
     }
+
+    public void requireCustomer() {
+        if (kind != WalletKind.CUSTOMER) {
+            throw BusinessException.systemWalletNotAllowed(id);
+        }
+    }
+
+    public void requireNotFrozen() {
+        if (status == WalletStatus.FROZEN) {
+            throw BusinessException.walletFrozen(id);
+        }
+    }
 }

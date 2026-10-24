@@ -20,7 +20,6 @@ CREATE TABLE transactions (
     type                     varchar(20)  NOT NULL,
     idempotency_key          varchar(100) NOT NULL,
     request_hash             varchar(64)  NOT NULL,
-    reverses_transaction_id  uuid         NULL REFERENCES transactions (id),
     created_at               timestamptz  NOT NULL DEFAULT now(),
     CONSTRAINT chk_tx_type CHECK (type IN ('DEPOSIT', 'TRANSFER', 'BILL_HOLD', 'BILL_REFUND')),
     CONSTRAINT uq_tx_type_idempotency_key UNIQUE (type, idempotency_key)
@@ -41,24 +40,18 @@ CREATE INDEX idx_ledger_transaction ON ledger_entries (transaction_id);
 CREATE INDEX idx_ledger_wallet      ON ledger_entries (wallet_id);
 
 CREATE TABLE bill_payments (
-    id                      uuid          PRIMARY KEY,
-    wallet_id               uuid          NOT NULL REFERENCES wallets (id),
-    biller_code             varchar(50)   NOT NULL,
-    amount                  bigint        NOT NULL,
-    biller_reference        varchar(100)  NOT NULL,
-    status                  varchar(10)   NOT NULL,
-    attempts                int           NOT NULL DEFAULT 0,
-    next_attempt_at         timestamptz   NOT NULL,
-    hold_transaction_id     uuid          NOT NULL REFERENCES transactions (id),
-    refund_transaction_id   uuid          NULL REFERENCES transactions (id),
-    created_at              timestamptz   NOT NULL DEFAULT now(),
-    updated_at              timestamptz   NOT NULL DEFAULT now(),
-    CONSTRAINT uq_bill_biller_reference UNIQUE (biller_reference),
+    id                     uuid         PRIMARY KEY,   -- also the reference sent to the biller
+    wallet_id              uuid         NOT NULL REFERENCES wallets (id),
+    amount                 bigint       NOT NULL,
+    status                 varchar(10)  NOT NULL,
+    hold_transaction_id    uuid         NOT NULL REFERENCES transactions (id),
+    refund_transaction_id  uuid         NULL REFERENCES transactions (id),
+    created_at             timestamptz  NOT NULL DEFAULT now(),
     CONSTRAINT chk_bill_amount CHECK (amount > 0),
     CONSTRAINT chk_bill_status CHECK (status IN ('PENDING', 'SUCCEEDED', 'FAILED'))
 );
 
-CREATE INDEX idx_bill_pending_due ON bill_payments (next_attempt_at) WHERE status = 'PENDING';
+CREATE INDEX idx_bill_pending ON bill_payments (created_at) WHERE status = 'PENDING';
 
 CREATE TABLE outbox_events (
     id            uuid         PRIMARY KEY,

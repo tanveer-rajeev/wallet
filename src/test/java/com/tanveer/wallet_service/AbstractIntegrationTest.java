@@ -13,9 +13,9 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@SpringBootTest
 @AutoConfigureMockMvc
-@Import(TestcontainersConfig.class)
+@SpringBootTest(properties = "bill-payments.reconcile-interval-ms=3600000")
+@Import({TestcontainersConfig.class, FakeBillerConfig.class})
 public abstract class AbstractIntegrationTest {
 
     @Autowired

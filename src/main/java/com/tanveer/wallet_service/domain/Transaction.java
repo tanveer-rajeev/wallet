@@ -1,11 +1,7 @@
 package com.tanveer.wallet_service.domain;
 
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.EnumType;
-import jakarta.persistence.Enumerated;
-import jakarta.persistence.Id;
-import jakarta.persistence.Table;
+import jakarta.persistence.*;
+
 import java.time.Instant;
 import java.util.UUID;
 import lombok.AccessLevel;
@@ -21,6 +17,7 @@ import org.hibernate.annotations.Immutable;
 public class Transaction {
 
     @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
 
     @Enumerated(EnumType.STRING)
@@ -32,9 +29,6 @@ public class Transaction {
 
     @Column(name = "request_hash", nullable = false)
     private String requestHash;
-
-    @Column(name = "reverses_transaction_id")
-    private UUID reversesTransactionId;
 
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;

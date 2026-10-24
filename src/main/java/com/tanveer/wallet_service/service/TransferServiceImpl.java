@@ -42,11 +42,9 @@ public class TransferServiceImpl implements TransferService {
         Wallet sender = wallets.get(fromWalletId);
         Wallet receiver = wallets.get(toWalletId);
 
-        requireCustomerWallet(sender);
-        requireCustomerWallet(receiver);
-        if (sender.getStatus() == WalletStatus.FROZEN) {
-            throw BusinessException.walletFrozen(fromWalletId);
-        }
+        sender.requireCustomer();
+        receiver.requireCustomer();
+        sender.requireNotFrozen();
 
         sender.debit(amount + fee);
         receiver.credit(amount);
@@ -65,12 +63,6 @@ public class TransferServiceImpl implements TransferService {
                     .orElseThrow(() -> BusinessException.walletNotFound(id)));
         }
         return locked;
-    }
-
-    private void requireCustomerWallet(Wallet wallet) {
-        if (wallet.getKind() != WalletKind.CUSTOMER) {
-            throw BusinessException.systemWalletNotAllowed(wallet.getId());
-        }
     }
 
     private void saveLedger(TransferResult r, long senderPays) {
