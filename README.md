@@ -1,8 +1,8 @@
-# Wallet Service
+# Wallet
 
-A small REST service for **BDT wallets**. Customers can deposit money, send money to each other (with a fee), and pay bills through an unreliable external biller.
+A user can deposit money, send money to each other (with a fee), and pay bills through an unreliable external biller.
 
-The main goal is **correctness with money**. No dinar is created or lost, retries never move money twice, balances never go below zero under parallel requests, and every operation is traceable in an append-only ledger.
+The main goal is **correctness with money**. No money is created or lost, retries never move money twice, balances never go below zero under parallel requests, and every operation is traceable in an append-only ledger.
 
 **Stack:** Java 21 · Spring Boot 4 · Spring Data JPA (Hibernate) · PostgreSQL 16 · Flyway · Maven · Testcontainers
 
