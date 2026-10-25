@@ -102,8 +102,8 @@ Errors use the standard `ProblemDetail` format with a stable `code` field:
 
 ## Business rules
 
-- Amounts are **whole dinars**, from 1 to **5,000,000**. Anything else is rejected (this applies to deposits, transfers and bill payments).
-- **Transfer fee:** 0.5% of the amount, rounded HALF_UP to whole dinars, **minimum 250**, **maximum 10,000**. The sender pays `amount + fee`. Deposits and bill payments have no fee.
+- Amounts range taken from 1 to **5,000,000**. Anything else is rejected (this applies to deposits, transfers and bill payments).
+- **Transfer fee:** 0.5% of the amount, rounded HALF_UP, **minimum 250**, **maximum 10,000**. The sender pays `amount + fee`. Deposits and bill payments have no fee.
 
   | Amount | Fee |
     |---|---|
