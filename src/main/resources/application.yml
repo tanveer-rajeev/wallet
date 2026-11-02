@@ -2,10 +2,13 @@
 spring:
   datasource:
     driver-class-name: org.postgresql.Driver
-    url: jdbc:postgresql://localhost:5432/wallet-service
+    url: jdbc:postgresql://wallet-database-1.cjqk6eiyufn3.ap-southeast-2.rds.amazonaws.com:5432/wallet-service
     username: postgres
-    password: root
+    password: root1234
   jpa:
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
     hibernate:
       ddl-auto: validate
       naming:
